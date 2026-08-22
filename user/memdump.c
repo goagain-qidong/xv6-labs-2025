@@ -60,6 +60,50 @@ main(int argc, char *argv[])
 void
 memdump(char *fmt, char *data)
 {
-  // Your code here.
-
+  for(; *fmt != '\0'; fmt++){
+    switch(*fmt){
+    case 'i': {
+      int value;
+      // Copy first: data may not be naturally aligned for an int load.
+      memmove(&value, data, sizeof(value));
+      printf("%d\n", value);
+      data += sizeof(value);
+      break;
+    }
+    case 'p': {
+      uint64 value;
+      memmove(&value, data, sizeof(value));
+      printf("%lx\n", value);
+      data += sizeof(value);
+      break;
+    }
+    case 'h': {
+      short value;
+      memmove(&value, data, sizeof(value));
+      printf("%d\n", value);
+      data += sizeof(value);
+      break;
+    }
+    case 'c':
+      printf("%c\n", *data);
+      data++;
+      break;
+    case 's': {
+      char *value;
+      // The next eight bytes contain a pointer, not inline string bytes.
+      memmove(&value, data, sizeof(value));
+      printf("%s\n", value);
+      data += sizeof(value);
+      break;
+    }
+    case 'S':
+      // S consumes the zero-terminated string stored directly in data.
+      printf("%s\n", data);
+      data += strlen(data) + 1;
+      break;
+    default:
+      fprintf(2, "memdump: unknown format '%c'\n", *fmt);
+      return;
+    }
+  }
 }

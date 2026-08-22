@@ -275,7 +275,11 @@ UEXTRA=
 ifeq ($(LAB),util)
 	UEXTRA += user/findtest.sh
 	UEXTRA += user/sixfive.txt
-	UPROGS += $U/_memdump
+	UPROGS += \
+		$U/_sleep \
+		$U/_sixfive \
+		$U/_find \
+		$U/_memdump
 endif
 
 
