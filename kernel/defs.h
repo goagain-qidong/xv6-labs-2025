@@ -88,6 +88,8 @@ void            printfinit(void);
 int             cpuid(void);
 void            kexit(int);
 int             kfork(void);
+uint64          vmafault(struct proc*, uint64, int);
+int             vmaunmap(struct proc*, uint64, uint64);
 int             growproc(int);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);

@@ -8,6 +8,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "param.h"
+#include "memlayout.h"
 #include "stat.h"
 #include "spinlock.h"
 #include "proc.h"
@@ -15,6 +16,8 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+
+#define MMAPBASE (1L << 32)
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -32,6 +35,58 @@ argfd(int n, int *pfd, struct file **pf)
   if(pf)
     *pf = f;
   return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 requested, len, offset;
+  int prot, flags, fd;
+  struct file *f;
+  argaddr(0, &requested);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argaddr(5, &offset);
+  if(requested != 0 || offset != 0 || len == 0 ||
+     fd < 0 || fd >= NOFILE || (f = myproc()->ofile[fd]) == 0 ||
+     f->type != FD_INODE || !(flags == MAP_SHARED || flags == MAP_PRIVATE) ||
+     !(prot & (PROT_READ | PROT_WRITE)) ||
+     ((prot & PROT_WRITE) && flags == MAP_SHARED && !f->writable))
+    return -1;
+
+  struct proc *p = myproc();
+  for(int i = 0; i < NVMA; i++){
+    if(!p->vmas[i].used){
+      uint64 addr = MMAPBASE;
+      for(int j = 0; j < NVMA; j++)
+        if(p->vmas[j].used && addr < p->vmas[j].addr + p->vmas[j].len)
+          addr = p->vmas[j].addr + p->vmas[j].len;
+      addr = PGROUNDUP(addr);
+      uint64 size = PGROUNDUP(len);
+      if(addr + size < addr || addr + size >= TRAPFRAME)
+        return -1;
+      p->vmas[i].addr = addr;
+      p->vmas[i].len = size;
+      p->vmas[i].offset = 0;
+      p->vmas[i].prot = prot;
+      p->vmas[i].flags = flags;
+      p->vmas[i].file = filedup(f);
+      p->vmas[i].used = 1;
+      return addr;
+    }
+  }
+  return -1;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, len;
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  return vmaunmap(myproc(), addr, len);
 }
 
 // Allocate a file descriptor for the given file.
