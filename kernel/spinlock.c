@@ -122,31 +122,67 @@ release(struct spinlock *lk)
 
 #ifdef LAB_LOCK
 static void
+rwguard_acquire(struct rwspinlock *rwlk)
+{
+  while(__sync_lock_test_and_set(&rwlk->guard, 1) != 0)
+    ;
+  __sync_synchronize();
+}
+
+static void
+rwguard_release(struct rwspinlock *rwlk)
+{
+  __sync_synchronize();
+  __sync_lock_release(&rwlk->guard);
+}
+
+static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  for(;;){
+    rwguard_acquire(rwlk);
+    if(rwlk->writer == 0 && rwlk->waiting == 0){
+      rwlk->readers++;
+      rwguard_release(rwlk);
+      return;
+    }
+    rwguard_release(rwlk);
+  }
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  rwguard_acquire(rwlk);
+  rwlk->readers--;
+  rwguard_release(rwlk);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  rwguard_acquire(rwlk);
+  rwlk->waiting++;
+  rwguard_release(rwlk);
+
+  for(;;){
+    rwguard_acquire(rwlk);
+    if(rwlk->writer == 0 && rwlk->readers == 0){
+      rwlk->waiting--;
+      rwlk->writer = 1;
+      rwguard_release(rwlk);
+      return;
+    }
+    rwguard_release(rwlk);
+  }
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  rwguard_acquire(rwlk);
+  rwlk->writer = 0;
+  rwguard_release(rwlk);
 }
 
 void
@@ -180,8 +216,10 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  initlock(&rwlk->l, "rwlk");
+  rwlk->guard = 0;
+  rwlk->readers = 0;
+  rwlk->writer = 0;
+  rwlk->waiting = 0;
 }
 
 // Test rwspinlock implementation.
