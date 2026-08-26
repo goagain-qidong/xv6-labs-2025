@@ -1,3 +1,24 @@
+BRANCH GUIDE
+
+This repository keeps each completed xv6 lab on a separate branch:
+
+  all-labs             Repository home and branch guide (default branch)
+  solution-util        Lab: Xv6 and Unix utilities
+  work-syscall-attack  Lab: System calls (final version, including attack)
+  solution-pgtbl       Lab: Page tables
+  solution-traps       Lab: Traps
+  solution-cow         Lab: Copy-on-write fork
+  solution-net         Lab: Network driver
+  solution-lock        Lab: Locks
+  solution-fs          Lab: File system
+  solution-mmap        Lab: mmap
+
+To view or continue a lab locally, switch to its branch. For example:
+
+  git switch work-syscall-attack
+
+-----------------------------------------------------------------------
+
 xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
 Version 6 (v6).  xv6 loosely follows the structure and style of v6,
 but is implemented for a modern RISC-V multiprocessor using ANSI C.
