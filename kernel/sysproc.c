@@ -85,6 +85,21 @@ sys_pause(void)
 }
 
 uint64
+sys_interpose(void)
+{
+  int mask;
+  char path[MAXPATH];
+  struct proc *p = myproc();
+
+  if(argstr(1, path, sizeof(path)) < 0)
+    return -1;
+  argint(0, &mask);
+  p->syscall_mask = (uint)mask;
+  safestrcpy(p->allowed_path, path, sizeof(p->allowed_path));
+  return 0;
+}
+
+uint64
 sys_kill(void)
 {
   int pid;
