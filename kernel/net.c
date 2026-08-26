@@ -19,10 +19,43 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+#define NBOUND 32
+#define NQUEUE 16
+
+struct udp_packet {
+  struct udp_packet *next;
+  uint32 src;
+  uint16 sport;
+  int len;
+  char data[2048];
+};
+
+struct udp_queue {
+  struct spinlock lock;
+  int used;
+  uint16 port;
+  int count;
+  struct udp_packet *head;
+  struct udp_packet *tail;
+};
+
+static struct udp_queue queues[NBOUND];
+
+static struct udp_queue *
+find_queue(int port)
+{
+  for(int i = 0; i < NBOUND; i++)
+    if(queues[i].used && queues[i].port == port)
+      return &queues[i];
+  return 0;
+}
+
 void
 netinit(void)
 {
   initlock(&netlock, "netlock");
+  for(int i = 0; i < NBOUND; i++)
+    initlock(&queues[i].lock, "udp_queue");
 }
 
 
@@ -34,9 +67,28 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
+  if(port < 0 || port > 65535)
+    return -1;
+
+  acquire(&netlock);
+  if(find_queue(port)){
+    release(&netlock);
+    return -1;
+  }
+  for(int i = 0; i < NBOUND; i++){
+    if(!queues[i].used){
+      queues[i].port = port;
+      queues[i].count = 0;
+      queues[i].head = queues[i].tail = 0;
+      __sync_synchronize();
+      queues[i].used = 1;
+      release(&netlock);
+      return 0;
+    }
+  }
+  release(&netlock);
 
   return -1;
 }
@@ -74,10 +126,46 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
+  int dport, maxlen;
+  uint64 srcaddr, sportaddr, bufaddr;
+  argint(0, &dport);
+  argaddr(1, &srcaddr);
+  argaddr(2, &sportaddr);
+  argaddr(3, &bufaddr);
+  argint(4, &maxlen);
+  if(dport < 0 || dport > 65535 || maxlen < 0)
+    return -1;
+
+  struct udp_queue *q = find_queue(dport);
+  if(q == 0)
+    return -1;
+  acquire(&q->lock);
+  while(q->head == 0){
+    if(killed(myproc())){
+      release(&q->lock);
+      return -1;
+    }
+    sleep(q, &q->lock);
+  }
+  struct udp_packet *pkt = q->head;
+  q->head = pkt->next;
+  if(q->head == 0)
+    q->tail = 0;
+  q->count--;
+  release(&q->lock);
+
+  int n = pkt->len;
+  if(n > maxlen)
+    n = maxlen;
+  struct proc *p = myproc();
+  if(copyout(p->pagetable, srcaddr, (char *)&pkt->src, sizeof(pkt->src)) < 0 ||
+     copyout(p->pagetable, sportaddr, (char *)&pkt->sport, sizeof(pkt->sport)) < 0 ||
+     copyout(p->pagetable, bufaddr, pkt->data, n) < 0){
+    kfree(pkt);
+    return -1;
+  }
+  kfree(pkt);
+  return n;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -174,7 +262,10 @@ sys_send(void)
     return -1;
   }
 
-  e1000_transmit(buf, total);
+  if(e1000_transmit(buf, total) < 0){
+    kfree(buf);
+    return -1;
+  }
 
   return 0;
 }
@@ -188,10 +279,60 @@ ip_rx(char *buf, int len)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
+  if(len < (int)(sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp))){
+    kfree(buf);
+    return;
+  }
+  struct eth *eth = (struct eth *)buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  int ihl = (ip->ip_vhl & 0xf) * 4;
+  if((ip->ip_vhl >> 4) != 4 || ihl < (int)sizeof(struct ip) ||
+     ip->ip_p != IPPROTO_UDP ||
+     len < (int)sizeof(struct eth) + ihl + (int)sizeof(struct udp)){
+    kfree(buf);
+    return;
+  }
+  struct udp *udp = (struct udp *)((char *)ip + ihl);
+  int ulen = ntohs(udp->ulen);
+  if(ulen < (int)sizeof(struct udp) ||
+     sizeof(struct eth) + ihl + ulen > len){
+    kfree(buf);
+    return;
+  }
+
+  int dport = ntohs(udp->dport);
+  struct udp_queue *q = find_queue(dport);
+  if(q == 0){
+    kfree(buf);
+    return;
+  }
+  struct udp_packet *pkt = kalloc();
+  if(pkt == 0){
+    kfree(buf);
+    return;
+  }
+  pkt->next = 0;
+  pkt->src = ntohl(ip->ip_src);
+  pkt->sport = ntohs(udp->sport);
+  pkt->len = ulen - sizeof(struct udp);
+  memmove(pkt->data, (char *)(udp + 1), pkt->len);
+
+  acquire(&q->lock);
+  if(q->count == NQUEUE){
+    release(&q->lock);
+    kfree(pkt);
+    kfree(buf);
+    return;
+  }
+  if(q->tail)
+    q->tail->next = pkt;
+  else
+    q->head = pkt;
+  q->tail = pkt;
+  q->count++;
+  wakeup(q);
+  release(&q->lock);
+  kfree(buf);
 }
 
 //

@@ -17,6 +17,7 @@ static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static volatile uint32 *regs;
 
 struct spinlock e1000_lock;
+struct spinlock e1000_rx_lock;
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -29,6 +30,7 @@ e1000_init(uint32 *xregs)
   int i;
 
   initlock(&e1000_lock, "e1000");
+  initlock(&e1000_rx_lock, "e1000_rx");
 
   regs = xregs;
 
@@ -105,7 +107,21 @@ e1000_transmit(char *buf, int len)
   // so that the caller knows to free buf.
   //
 
-  
+  acquire(&e1000_lock);
+  uint32 i = regs[E1000_TDT] % TX_RING_SIZE;
+  if((tx_ring[i].status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1;
+  }
+  if(tx_ring[i].addr)
+    kfree((void *)tx_ring[i].addr);
+
+  tx_ring[i].addr = (uint64)buf;
+  tx_ring[i].length = len;
+  tx_ring[i].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_ring[i].status = 0;
+  regs[E1000_TDT] = (i + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
@@ -118,7 +134,26 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
+  for(;;){
+    acquire(&e1000_rx_lock);
+    uint32 i = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    if((rx_ring[i].status & E1000_RXD_STAT_DD) == 0){
+      release(&e1000_rx_lock);
+      break;
+    }
 
+    char *oldbuf = (char *)rx_ring[i].addr;
+    int len = rx_ring[i].length;
+    char *newbuf = kalloc();
+    if(newbuf == 0)
+      panic("e1000 recv");
+    rx_ring[i].addr = (uint64)newbuf;
+    rx_ring[i].status = 0;
+    regs[E1000_RDT] = i;
+    release(&e1000_rx_lock);
+
+    net_rx(oldbuf, len);
+  }
 }
 
 void
