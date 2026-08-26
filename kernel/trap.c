@@ -44,7 +44,7 @@ usertrap(void)
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);
+  w_stvec((uint64)kernelvec);  //DOC: kernelvec
 
   struct proc *p = myproc();
   
@@ -69,7 +69,8 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
+            (vmafault(p, r_stval(), r_scause() == 13) != 0 ||
+             vmfault(p->pagetable, r_stval(), r_scause() == 13) != 0)) {
     // page fault on lazily-allocated page
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
@@ -79,6 +80,16 @@ usertrap(void)
 
   if(killed(p))
     kexit(-1);
+
+  if(which_dev == 2 && p->alarm_interval > 0 && !p->alarm_active){
+    p->alarm_ticks++;
+    if(p->alarm_ticks >= p->alarm_interval){
+      p->alarm_ticks = 0;
+      p->alarm_active = 1;
+      memmove(&p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
+      p->trapframe->epc = p->alarm_handler;
+    }
+  }
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)

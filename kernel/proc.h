@@ -81,6 +81,17 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+#define NVMA 16
+struct vma {
+  uint64 addr;
+  uint64 len;
+  uint64 offset;
+  int prot;
+  int flags;
+  struct file *file;
+  int used;
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -100,8 +111,22 @@ struct proc {
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
+#ifdef LAB_PGTBL
+  struct usyscall *usyscall;   // read-only data shared with user space
+#endif
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint syscall_mask;           // calls blocked by interpose
+  char allowed_path[MAXPATH];  // path allowed through the mask
+  int alarm_interval;
+  int alarm_ticks;
+  uint64 alarm_handler;
+  int alarm_active;
+  struct trapframe alarm_trapframe;
+  struct vma vmas[NVMA];
+#ifdef LAB_LOCK
+  struct cpu *pincpu;
+#endif
 };

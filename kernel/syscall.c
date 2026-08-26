@@ -6,6 +6,9 @@
 #include "proc.h"
 #include "syscall.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 // Fetch the uint64 at addr from the current process.
 int
@@ -101,6 +104,26 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
+extern uint64 sys_interpose(void);
+extern uint64 sys_sigalarm(void);
+extern uint64 sys_sigreturn(void);
+extern uint64 sys_symlink(void);
+extern uint64 sys_mmap(void);
+extern uint64 sys_munmap(void);
+
+#ifdef LAB_NET
+extern uint64 sys_bind(void);
+extern uint64 sys_unbind(void);
+extern uint64 sys_send(void);
+extern uint64 sys_recv(void);
+#endif
+#ifdef LAB_PGTBL
+extern uint64 sys_pgpte(void);
+extern uint64 sys_kpgtbl(void);
+#endif
+#ifdef LAB_LOCK
+extern uint64 sys_cpupin(void);
+#endif
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -126,7 +149,43 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_interpose] sys_interpose,
+[SYS_sigalarm] sys_sigalarm,
+[SYS_sigreturn] sys_sigreturn,
+[SYS_symlink] sys_symlink,
+[SYS_mmap] sys_mmap,
+[SYS_munmap] sys_munmap,
+#ifdef LAB_NET
+[SYS_bind] sys_bind,
+[SYS_unbind] sys_unbind,
+[SYS_send] sys_send,
+[SYS_recv] sys_recv,
+#endif
+#ifdef LAB_PGTBL
+[SYS_pgpte] sys_pgpte,
+[SYS_kpgtbl] sys_kpgtbl,
+#endif
+#ifdef LAB_LOCK
+[SYS_rwlktest] sys_rwlktest,
+[SYS_cpupin] sys_cpupin,
+#endif
 };
+
+static int
+allowed_syscall(struct proc *p, int num)
+{
+  char path[MAXPATH];
+
+  if(num >= 32 || (p->syscall_mask & (1U << num)) == 0)
+    return 1;
+  if((num == SYS_open || num == SYS_exec) &&
+     strncmp(p->allowed_path, "-", MAXPATH) != 0 &&
+     argstr(0, path, sizeof(path)) >= 0 &&
+     strncmp(path, p->allowed_path, MAXPATH) == 0)
+    return 1;
+  return 0;
+}
+
 
 void
 syscall(void)
@@ -136,6 +195,10 @@ syscall(void)
 
   num = p->trapframe->a7;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+    if(!allowed_syscall(p, num)){
+      p->trapframe->a0 = -1;
+      return;
+    }
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();

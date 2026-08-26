@@ -1,10 +1,13 @@
 #include "types.h"
 #include "riscv.h"
-#include "defs.h"
 #include "param.h"
+#include "defs.h"
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#ifdef PGTBL_SOL
+#include "riscv.h"
+#endif
 #include "vm.h"
 
 uint64
@@ -68,7 +71,10 @@ sys_pause(void)
   int n;
   uint ticks0;
 
+
   argint(0, &n);
+  if(strncmp(myproc()->name, "bttest", sizeof(myproc()->name)) == 0)
+    backtrace();
   if(n < 0)
     n = 0;
   acquire(&tickslock);
@@ -83,6 +89,81 @@ sys_pause(void)
   release(&tickslock);
   return 0;
 }
+
+uint64
+sys_interpose(void)
+{
+  int mask;
+  char path[MAXPATH];
+  struct proc *p = myproc();
+
+  if(argstr(1, path, sizeof(path)) < 0)
+    return -1;
+  argint(0, &mask);
+  p->syscall_mask = (uint)mask;
+  safestrcpy(p->allowed_path, path, sizeof(p->allowed_path));
+  return 0;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int interval;
+  uint64 handler;
+  struct proc *p = myproc();
+
+  argint(0, &interval);
+  argaddr(1, &handler);
+  if(interval < 0)
+    return -1;
+  p->alarm_interval = interval;
+  p->alarm_ticks = 0;
+  p->alarm_handler = handler;
+  p->alarm_active = 0;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  uint64 a0 = p->alarm_trapframe.a0;
+
+  memmove(p->trapframe, &p->alarm_trapframe, sizeof(struct trapframe));
+  p->alarm_active = 0;
+  return a0;
+}
+
+
+#ifdef LAB_PGTBL
+int
+sys_pgpte(void)
+{
+  uint64 va;
+  struct proc *p;  
+
+  p = myproc();
+  argaddr(0, &va);
+  pte_t *pte = pgpte(p->pagetable, va);
+  if(pte != 0) {
+      return (uint64) *pte;
+  }
+  return 0;
+}
+#endif
+
+#ifdef LAB_PGTBL
+int
+sys_kpgtbl(void)
+{
+  struct proc *p;  
+
+  p = myproc();
+  vmprint(p->pagetable);
+  return 0;
+}
+#endif
+
 
 uint64
 sys_kill(void)
@@ -105,3 +186,20 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+#ifdef LAB_LOCK
+uint64
+sys_cpupin(void)
+{
+  struct proc *p = myproc();
+  int cpu;
+
+  argint(0, &cpu);
+  if (cpu < 0 || cpu >= NCPU)
+    return -1;
+  acquire(&p->lock);
+  p->pincpu = &cpus[cpu];
+  release(&p->lock);
+  return 0;
+}
+#endif

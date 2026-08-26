@@ -58,6 +58,15 @@ OBJS += \
 	$K/pci.o
 endif
 
+ifeq ($(LAB),all)
+OBJS += \
+	$K/stats.o \
+	$K/sprintf.o \
+	$K/e1000.o \
+	$K/net.o \
+	$K/pci.o
+endif
+
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
@@ -88,11 +97,17 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 
 ifdef LAB
 LABUPPER = $(shell echo $(LAB) | tr a-z A-Z)
 XCFLAGS += -DSOL_$(LABUPPER) -DLAB_$(LABUPPER)
+endif
+
+ifeq ($(LAB),all)
+XCFLAGS += -DSOL_COW -DSOL_MMAP \
+	-DLAB_SYSCALL -DLAB_PGTBL -DLAB_TRAPS -DLAB_COW \
+	-DLAB_NET -DLAB_LOCK -DLAB_FS -DLAB_MMAP
 endif
 
 CFLAGS += $(XCFLAGS)
@@ -110,6 +125,9 @@ CFLAGS += -I.
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
 ifeq ($(LAB),net)
+CFLAGS += -DNET_TESTS_PORT=$(SERVERPORT)
+endif
+ifeq ($(LAB),all)
 CFLAGS += -DNET_TESTS_PORT=$(SERVERPORT)
 endif
 
@@ -148,6 +166,9 @@ ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 ifeq ($(LAB),lock)
 ULIB += $U/statistics.o
 endif
+ifeq ($(LAB),all)
+ULIB += $U/statistics.o
+endif
 
 _%: %.o $(ULIB) $U/user.ld
 	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $< $(ULIB)
@@ -167,7 +188,7 @@ $U/_forktest: $U/forktest.o $(ULIB)
 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
 
 mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
-	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+	gcc $(XCFLAGS) -Wno-unknown-attributes -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
 
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
@@ -213,11 +234,6 @@ UPROGS += \
 	$U/_secret
 endif
 
-ifeq ($(LAB),lock)
-UPROGS += \
-	$U/_stats
-endif
-
 ifeq ($(LAB),traps)
 UPROGS += \
 	$U/_call\
@@ -260,7 +276,8 @@ endif
 ifeq ($(LAB),lock)
 UPROGS += \
 	$U/_kalloctest\
-	$U/_bcachetest
+	$U/_stats\
+	$U/_rwlktest
 endif
 
 ifeq ($(LAB),fs)
@@ -279,6 +296,30 @@ UPROGS += \
 	$U/_nettest
 endif
 
+ifeq ($(LAB),all)
+UPROGS += \
+	$U/_sleep \
+	$U/_sixfive \
+	$U/_find \
+	$U/_memdump \
+	$U/_sandbox \
+	$U/_attack \
+	$U/_secret \
+	$U/_call \
+	$U/_bttest \
+	$U/_alarmtest \
+	$U/_cowtest \
+	$U/_pgtbltest \
+	$U/_kalloctest \
+	$U/_bcachetest \
+	$U/_stats \
+	$U/_rwlktest \
+	$U/_bigfile \
+	$U/_symlinktest \
+	$U/_mmaptest \
+	$U/_nettest
+endif
+
 UEXTRA=
 ifeq ($(LAB),util)
 	UEXTRA += user/findtest.sh
@@ -287,6 +328,9 @@ ifeq ($(LAB),util)
 endif
 ifeq ($(LAB),syscall)
 	UEXTRA += user/exec.sh
+endif
+ifeq ($(LAB),all)
+	UEXTRA += user/findtest.sh user/sixfive.txt user/exec.sh
 endif
 
 fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
@@ -317,6 +361,12 @@ endif
 ifeq ($(LAB),fs)
 CPUS := 1
 endif
+ifeq ($(LAB),lock)
+CPUS := 4
+endif
+ifeq ($(LAB),all)
+CPUS := 4
+endif
 
 FWDPORT1 = $(shell expr `id -u` % 5000 + 25999)
 FWDPORT2 = $(shell expr `id -u` % 5000 + 30999)
@@ -327,6 +377,10 @@ QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 ifeq ($(LAB),net)
+QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT1)-:2000,hostfwd=udp::$(FWDPORT2)-:2001 -object filter-dump,id=net0,netdev=net0,file=packets.pcap
+QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0
+endif
+ifeq ($(LAB),all)
 QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT1)-:2000,hostfwd=udp::$(FWDPORT2)-:2001 -object filter-dump,id=net0,netdev=net0,file=packets.pcap
 QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0
 endif
@@ -350,6 +404,9 @@ ifeq ($(LAB),net)
 # try to generate a unique port for the echo server
 SERVERPORT = $(shell expr `id -u` % 5000 + 25099)
 
+endif
+ifeq ($(LAB),all)
+SERVERPORT = $(shell expr `id -u` % 5000 + 25099)
 endif
 
 ##

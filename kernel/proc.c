@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -98,7 +102,6 @@ allocpid()
   pid = nextpid;
   nextpid = nextpid + 1;
   release(&pid_lock);
-
   return pid;
 }
 
@@ -124,6 +127,14 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->usyscall = 0;
+  p->syscall_mask = 0;
+  p->allowed_path[0] = 0;
+  p->alarm_interval = 0;
+  p->alarm_ticks = 0;
+  p->alarm_handler = 0;
+  p->alarm_active = 0;
+  memset(p->vmas, 0, sizeof(p->vmas));
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -131,6 +142,17 @@ found:
     release(&p->lock);
     return 0;
   }
+
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  p->usyscall->pid = p->pid;
+
+#ifdef LAB_LOCK
+  p->pincpu = 0;
+#endif
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -158,6 +180,9 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->usyscall)
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -168,7 +193,109 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->syscall_mask = 0;
+  p->allowed_path[0] = 0;
+  p->alarm_interval = 0;
+  p->alarm_ticks = 0;
+  p->alarm_handler = 0;
+  p->alarm_active = 0;
+  memset(p->vmas, 0, sizeof(p->vmas));
   p->state = UNUSED;
+}
+
+uint64
+vmafault(struct proc *p, uint64 va, int read)
+{
+  struct vma *v = 0;
+  for(int i = 0; i < NVMA; i++)
+    if(p->vmas[i].used && va >= p->vmas[i].addr &&
+       va < p->vmas[i].addr + p->vmas[i].len){
+      v = &p->vmas[i];
+      break;
+    }
+  if(v == 0 || (read && !(v->prot & PROT_READ)) ||
+     (!read && !(v->prot & PROT_WRITE)))
+    return 0;
+
+  uint64 page = PGROUNDDOWN(va);
+  char *mem = kalloc();
+  if(mem == 0)
+    return 0;
+  memset(mem, 0, PGSIZE);
+  ilock(v->file->ip);
+  int n = readi(v->file->ip, 0, (uint64)mem,
+                v->offset + page - v->addr, PGSIZE);
+  iunlock(v->file->ip);
+  if(n < 0){
+    kfree(mem);
+    return 0;
+  }
+  int perm = PTE_U;
+  if(v->prot & (PROT_READ | PROT_WRITE))
+    perm |= PTE_R;
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_W;
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+  if(mappages(p->pagetable, page, PGSIZE, (uint64)mem, perm) < 0){
+    kfree(mem);
+    return 0;
+  }
+  return (uint64)mem;
+}
+
+int
+vmaunmap(struct proc *p, uint64 addr, uint64 len)
+{
+  if(len == 0 || addr % PGSIZE)
+    return -1;
+  len = PGROUNDUP(len);
+  struct vma *v = 0;
+  for(int i = 0; i < NVMA; i++)
+    if(p->vmas[i].used && addr >= p->vmas[i].addr &&
+       addr + len <= p->vmas[i].addr + p->vmas[i].len){
+      v = &p->vmas[i];
+      break;
+    }
+  if(v == 0)
+    return -1;
+
+  for(uint64 a = addr; a < addr + len; a += PGSIZE){
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte && (*pte & PTE_V)){
+      if(v->flags == MAP_SHARED){
+        uint64 off = v->offset + a - v->addr;
+        uint n = 0;
+        ilock(v->file->ip);
+        if(off < v->file->ip->size){
+          n = v->file->ip->size - off;
+          if(n > PGSIZE)
+            n = PGSIZE;
+        }
+        iunlock(v->file->ip);
+        if(n){
+          begin_op();
+          ilock(v->file->ip);
+          writei(v->file->ip, 0, PTE2PA(*pte), off, n);
+          iunlock(v->file->ip);
+          end_op();
+        }
+      }
+      uvmunmap(p->pagetable, a, 1, 1);
+    }
+  }
+
+  if(addr == v->addr && len == v->len){
+    fileclose(v->file);
+    memset(v, 0, sizeof(*v));
+  } else if(addr == v->addr){
+    v->addr += len;
+    v->offset += len;
+    v->len -= len;
+  } else {
+    v->len -= len;
+  }
+  return 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -202,6 +329,15 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+              (uint64)p->usyscall, PTE_R | PTE_U) < 0){
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmfree(pagetable, 0);
+    return 0;
+  }
+
+
   return pagetable;
 }
 
@@ -212,6 +348,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);
   uvmfree(pagetable, sz);
 }
 
@@ -264,7 +401,7 @@ kfork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-
+  
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -272,6 +409,7 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -283,20 +421,29 @@ kfork(void)
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      np->vmas[i] = p->vmas[i];
+      np->vmas[i].file = filedup(p->vmas[i].file);
+    }
+  }
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+  np->syscall_mask = p->syscall_mask;
+  safestrcpy(np->allowed_path, p->allowed_path, sizeof(np->allowed_path));
 
   pid = np->pid;
 
   release(&np->lock);
-
+  
   acquire(&wait_lock);
   np->parent = p;
   release(&wait_lock);
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+
   release(&np->lock);
 
   return pid;
@@ -328,6 +475,10 @@ kexit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  for(int i = 0; i < NVMA; i++)
+    if(p->vmas[i].used)
+      vmaunmap(p, p->vmas[i].addr, p->vmas[i].len);
+
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -337,6 +488,7 @@ kexit(int status)
     }
   }
 
+  
   begin_op();
   iput(p->cwd);
   end_op();
@@ -434,27 +586,39 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
+    int nproc = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
+      if(p->state != UNUSED) {
+        nproc++;
+      }
+#ifdef LAB_LOCK
+      if(p->pincpu && p->pincpu != c) {
+        release(&p->lock);
+        continue;
+      }
+#endif
       if(p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-        found = 1;
       }
       release(&p->lock);
     }
-    if(found == 0) {
+    if(nproc <= 2) {   // only init and sh exist
       // nothing to run; stop running on this core until an interrupt.
+      intr_on();
+#ifndef LAB_FS
       asm volatile("wfi");
+#endif
     }
   }
 }

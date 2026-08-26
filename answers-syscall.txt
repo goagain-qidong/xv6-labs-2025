@@ -1,0 +1,16 @@
+1. usertrap() called syscall().
+
+2. p->trapframe->a7 is 0x7.  It is SYS_exec, the system-call number
+   placed in a7 by initcode before executing ecall.
+
+3. The SPP bit in sstatus is clear, so the CPU was previously running
+   in user mode.
+
+4. The faulting instruction is "lw a3,0(zero)".  Register a3 holds the
+   local variable num in this build.
+
+5. Dereferencing address zero causes a load page fault because virtual
+   address 0 is not mapped in the kernel page table.  The scause value
+   0xd confirms a load page fault.
+
+6. The process is named initcode and its pid is 1.

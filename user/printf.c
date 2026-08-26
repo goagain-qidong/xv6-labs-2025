@@ -17,7 +17,7 @@ printint(int fd, long long xx, int base, int sgn)
 {
   char buf[20];
   int i, neg;
-  uint x;
+  unsigned long long x;
 
   neg = 0;
   if(sgn && xx < 0){
@@ -130,3 +130,4 @@ printf(const char *fmt, ...)
   va_start(ap, fmt);
   vprintf(1, fmt, ap);
 }
+

@@ -1,0 +1,27 @@
+Inspect a user-process page table
+
+The low leaf entries contain the process text, data, heap, and stack pages.
+PTE_V means valid, PTE_U permits user access, PTE_R permits reads,
+PTE_W permits writes, and PTE_X permits instruction fetches. Text pages are
+normally R-XU, data, heap, and stack pages are RW-U, and the stack guard page
+has PTE_U cleared. Unmapped entries have a zero PTE.
+
+At the high end, USYSCALL is R--U and contains struct usyscall with the PID.
+TRAPFRAME is RW-- without PTE_U and contains the saved user registers.
+TRAMPOLINE is R-X- without PTE_U and contains the trap entry and return code.
+Physical addresses need not be consecutive because each page is allocated
+independently.
+
+Speed up system calls
+
+getppid could be accelerated by storing the parent PID in the shared page and
+updating it when parentage changes. Values such as uptime or the tick counter
+could also be exposed read-only, with the kernel updating the shared data.
+
+Print a page table
+
+Non-leaf entries point to lower-level page-table pages and only need PTE_V.
+The low leaf entries printed by vmprint are the same user text, data, heap,
+and stack mappings reported by print_pgtbl. The three high leaves are
+USYSCALL, TRAPFRAME, and TRAMPOLINE with the permissions described above.
+
