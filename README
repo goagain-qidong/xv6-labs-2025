@@ -1,19 +1,19 @@
-BRANCH GUIDE
+分支说明
 
-This repository keeps each completed xv6 lab on a separate branch:
+本仓库将每个已完成的 xv6 实验分别保存在不同分支中：
 
-  all-labs             Repository home and branch guide (default branch)
-  solution-util        Lab: Xv6 and Unix utilities
-  work-syscall-attack  Lab: System calls (final version, including attack)
-  solution-pgtbl       Lab: Page tables
-  solution-traps       Lab: Traps
-  solution-cow         Lab: Copy-on-write fork
-  solution-net         Lab: Network driver
-  solution-lock        Lab: Locks
-  solution-fs          Lab: File system
-  solution-mmap        Lab: mmap
+  all-labs             仓库主页和分支说明（默认分支）
+  solution-util        实验一：Xv6 与 Unix 实用程序
+  work-syscall-attack  实验二：系统调用（最终版，包含 attack）
+  solution-pgtbl       实验三：页表
+  solution-traps       实验四：陷阱与系统调用机制
+  solution-cow         实验五：写时复制 fork
+  solution-net         实验六：网络驱动程序
+  solution-lock        实验七：锁
+  solution-fs          实验八：文件系统
+  solution-mmap        实验九：mmap
 
-To view or continue a lab locally, switch to its branch. For example:
+如需查看或继续某个实验，请切换到相应分支。例如：
 
   git switch work-syscall-attack
 
